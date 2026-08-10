@@ -412,8 +412,24 @@ OR UPLOAD FILE
 <input
 type="file"
 id="writingFile"
-accept=".txt,.docx,.pdf,image/*"
+accept="image/*,.txt,.docx,.pdf"
+onchange="handleWritingFileUpload(event)"
 >
+<div
+  id="writingImageStatus"
+  style="
+    display:none;
+    margin-top:12px;
+    padding:12px;
+    border-radius:12px;
+    background:#eef5ff;
+    border:1px solid #bfdbfe;
+    color:#164478;
+    font-weight:800;
+    text-align:center;
+  "
+></div>
+
 
 <br><br>
 
@@ -514,7 +530,7 @@ Start Recording Answer
 
 <br><br>
 
-<button onclick="stopRecording()">
+<button id="stopRecordBtn" onclick="stopRecording()">
 Stop Recording
 </button>
 <br><br>
@@ -531,7 +547,7 @@ Stop Recording
 
 <br><br>
 
-<button onclick="analyzeSpeakingAnswer()">
+<button id="analyzeSpeakingBtn" onclick="analyzeSpeakingAnswer()" disabled>
 Analyze This Answer
 </button>
 <br><br>
@@ -651,6 +667,8 @@ let currentTranscript = "";
  
 let recordingTimerInterval = null;
 let recordingSeconds = 0;
+let recordingStream = null;
+let recordingReady = false;
 const SPEAKING_LEVELS = [
   "A1",
   "A2",
@@ -3640,198 +3658,78 @@ function getCEFRFromPlacement(level){
 ============================== */
 
 async function showResult(level){
-clearProgress(
-  document.getElementById("studentID").value.trim()
-);
-currentPlacementLevel = level;
+  currentPlacementLevel = level;
 
-  document
-    .getElementById("testBox")
-    .style.display =
-    "none";
+  document.getElementById("testBox").style.display = "none";
+  document.getElementById("submitArea").style.display = "none";
+  document.getElementById("submitBtn").style.display = "none";
 
-  document
-    .getElementById("submitBtn")
-    .style.display =
-    "none";
+  // لا تظهر نتيجة المرحلة الأولى أو النتيجة النهائية قبل إكمال جميع المراحل.
+  document.getElementById("result").innerHTML = "";
 
-  let html = `
+  const placementCEFR = getCEFRFromPlacement(level);
+  const writingTopic = WRITING_TOPICS[placementCEFR];
 
-    <div class="result">
+  document.getElementById("writingText").placeholder = writingTopic;
 
-      <div>
-        Final CEFR Level
-      </div>
+  const oldTopic = document.getElementById("writingTopicBox");
+  if(oldTopic){ oldTopic.remove(); }
 
-<div class="final-level" style="display:none">
-  ${level}
-</div>
-      <hr>
-
-      <div class="stats">
-
-  `;
-
-  Object.keys(finalStats)
-    .forEach(l=>{
-
-      html += `
-
-        <div class="stat-box">
-
-          ${l}
-
-          <br><br>
-
-          ${finalStats[l].correct}
-          /
-          ${finalStats[l].total}
-
-          <br><br>
-
-          ${finalStats[l].percent}%
-
-        </div>
-
-      `;
-
-    });
-
-  html += `
-
-      </div>
-
-    </div>
-
-  `;
-document
-  .getElementById("result")
-  .innerHTML = html;
-
-const placementCEFR =
-  getCEFRFromPlacement(level);
-
-const writingTopic =
-  WRITING_TOPICS[placementCEFR];
-
-document
-  .getElementById("writingText")
-  .placeholder =
-  writingTopic;
-
-const oldTopic =
-  document.getElementById(
-    "writingTopicBox"
-  );
-
-if(oldTopic){
-  oldTopic.remove();
-}
-
-document
-  .getElementById("writingBox")
-  .insertAdjacentHTML(
+  document.getElementById("writingBox").insertAdjacentHTML(
     "afterbegin",
     `
     <div class="reading" id="writingTopicBox">
-      <b>Writing Topic (${placementCEFR}):</b>
-      <br>
+      <b>Writing Topic (${placementCEFR}):</b><br>
       ${writingTopic}
     </div>
     `
   );
-const studentProgress = {
-currentStage: "writing",
-placementDone: true,
-writingCompleted: false,
-speakingCompleted: false,
-speakingStartLevel:
-  placementCEFR,
 
-  studentName:
-    document.getElementById("studentName").value,
+  const studentProgress = {
+    currentStage:"writing",
+    placementDone:true,
+    writingCompleted:false,
+    speakingCompleted:false,
+    speakingStartLevel:placementCEFR,
+    studentName:document.getElementById("studentName").value,
+    studentPhone:document.getElementById("studentPhone").value,
+    studentID:document.getElementById("studentID").value,
+    level:placementCEFR,
+    writingTopic,
+    placementLevel:level,
+    finalLevel:"",
+    finalStats
+  };
 
-  studentPhone:
-    document.getElementById("studentPhone").value,
+  await saveProgress(studentProgress);
 
-  studentID:
-    document.getElementById("studentID").value,
+  await db.collection("cefr_results").doc(studentProgress.studentID).set({
+    name:studentProgress.studentName,
+    phone:studentProgress.studentPhone,
+    studentID:studentProgress.studentID,
+    level:placementCEFR,
+    placementLevel:level,
+    writingLevel:"",
+    speakingLevel:"",
+    finalCEFR:"",
+    finalLevel:"",
+    finalPlacementLevel:"",
+    stats:finalStats,
+    testCompleted:true,
+    writingCompleted:false,
+    speakingCompleted:false,
+    assessmentCompleted:false,
+    date:new Date().toLocaleString(),
+    timestamp:Date.now()
+  });
 
-level:
-  placementCEFR,
+  const writingBox = document.getElementById("writingBox");
+  writingBox.style.display = "block";
 
-writingTopic:
-  writingTopic,
-  placementLevel: level,
-
-  finalLevel: level,
-
-  finalStats: finalStats,
-
-  writingCompleted: false,
-
-  speakingCompleted: false
-
-};
-await saveProgress(studentProgress);
-
-await db
-  .collection("cefr_results")
-  .doc(
-    studentProgress.studentID
-  )
-  .set({
-  name:
-    studentProgress.studentName,
-
-  phone:
-    studentProgress.studentPhone,
-
-  studentID:
-    studentProgress.studentID,
-
-  level:
-    placementCEFR,
-
-  placementLevel:
-    level,
-
-  writingLevel:
-    "",
-
-  speakingLevel:
-    "",
-
-  finalCEFR:
-    placementCEFR,
-
-  finalLevel:
-    level,
-
-  stats:
-    finalStats,
-
-  testCompleted:
-    true,
-
-  writingCompleted:
-    false,
-
-  speakingCompleted:
-    false,
-
-  date:
-    new Date()
-      .toLocaleString(),
-
-  timestamp:
-    Date.now()
-
-});
-document
-  .getElementById("writingBox")
-  .style.display = "block";
-
+  // الانتقال المباشر إلى بداية اختبار الكتابة.
+  requestAnimationFrame(()=>{
+    writingBox.scrollIntoView({behavior:"smooth", block:"start"});
+  });
 }
 
 document
@@ -3942,44 +3840,8 @@ async function evaluateWritingAI(
   topic,
   targetLevel
 ){
-
-  const prompt = `
-You are a professional CEFR writing examiner.
-
-Evaluate the student's writing according to the target CEFR level and the assigned topic.
-
-Return ONLY JSON:
-
-{
-"level":"",
-"score":0,
-"grammar":0,
-"vocabulary":0,
-"coherence":0,
-"taskAchievement":0,
-"feedback":""
-}
-
-Rules:
-- Check if the student answered the assigned topic.
-- If the answer is off-topic, reduce the score strongly.
-- Evaluate grammar, vocabulary, coherence, and task achievement.
-- The level must be A1, A2, B1, B2, C1, or C2.
-- Be strict but fair.
-
-Target CEFR Level:
-${targetLevel}
-
-Writing Topic:
-${topic}
-
-Student Writing:
-${text}
-`;
-
-const response =
-  await fetch(
-    "https://muddy-frost-dfd0.abbassaboali.workers.dev/",
+  const response = await fetch(
+    "https://prudle-openai.abbassaboali.workers.dev/",
     {
       method:"POST",
 
@@ -3988,100 +3850,151 @@ const response =
       },
 
       body:JSON.stringify({
-        text: prompt
-      })
-    }
-  );
-
-const data =
-  await response.json();
-
-if(!response.ok){
-  throw new Error(
-    data.error ||
-    "Writing evaluation failed"
-  );
-}
-
-let resultText =
-  data.candidates?.[0]
-    ?.content?.parts?.[0]
-    ?.text
-    ?.trim();
-
-if(!resultText){
-  console.log("WORKER RESPONSE:", data);
-  throw new Error("No text returned from Worker/Gemini. Check Worker code or API key.");
-}
-
-resultText =
-  resultText
-    .replace(/```json/g,"")
-    .replace(/```/g,"")
-    .trim();
-
-return JSON.parse(resultText);
-}
-async function extractTextWithAI(file){
-
-  const imageBase64 = await imageToBase64(file);
-  const base64Data = imageBase64.split(",")[1];
-
-  if(!base64Data){
-    throw new Error("Failed to convert image to base64.");
-  }
-
-  const mimeType = file.type || "image/jpeg";
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text: "Read all handwritten or printed English text from this image. Return only the extracted text. If unreadable, return IMAGE_NOT_READABLE."
-              },
-              {
-                inline_data: {
-                  mime_type: mimeType,
-                  data: base64Data
-                }
-              }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0
-        }
+        task:"evaluate_writing",
+        text,
+        topic,
+        targetLevel
       })
     }
   );
 
   const data = await response.json();
 
-  console.log("Gemini image response:", data);
-
-  if(!response.ok){
+  if(
+    !response.ok ||
+    data.success === false
+  ){
     throw new Error(
-      data.error?.message || "Gemini Image Error"
+      data.error ||
+      "Writing evaluation failed"
+    );
+  }
+
+  const result =
+    data.result &&
+    typeof data.result === "object"
+      ? data.result
+      : data;
+
+  return {
+    level:
+      result.level || "A1",
+
+    score:
+      Number(result.score) || 0,
+
+    grammar:
+      Number(
+        result.grammar ??
+        result.grammarScore
+      ) || 0,
+
+    vocabulary:
+      Number(
+        result.vocabulary ??
+        result.vocabularyScore
+      ) || 0,
+
+    coherence:
+      Number(
+        result.coherence ??
+        result.organizationScore
+      ) || 0,
+
+    taskAchievement:
+      Number(
+        result.taskAchievement ??
+        result.taskAchievementScore
+      ) || 0,
+
+    feedback:
+      result.feedback ||
+      result.overallFeedback ||
+      ""
+  };
+}
+
+async function extractTextWithAI(file){
+
+  const imageBase64 =
+    await imageToBase64(file);
+
+  const base64Data =
+    imageBase64.split(",")[1];
+
+  if(!base64Data){
+    throw new Error(
+      "Failed to convert image to Base64."
+    );
+  }
+
+  const mimeType =
+    file.type ||
+    "image/jpeg";
+
+  const response = await fetch(
+    "https://prudle-openai.abbassaboali.workers.dev/",
+    {
+      method:
+        "POST",
+
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
+
+      body:
+        JSON.stringify({
+          task:
+            "image_ocr",
+
+          image:
+            base64Data,
+
+          mimeType,
+
+          filename:
+            file.name ||
+            "writing-image.jpg"
+        })
+    }
+  );
+
+  const data =
+    await response.json();
+
+  if(
+    !response.ok ||
+    data.success === false
+  ){
+    throw new Error(
+      data.error ||
+      "OpenAI image reading failed."
     );
   }
 
   const extractedText =
-    data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    String(
+      data.extractedText ||
+      data.text ||
+      data.output_text ||
+      ""
+    ).trim();
 
-  if(!extractedText || extractedText.includes("IMAGE_NOT_READABLE")){
-    throw new Error("The image could not be read. Please upload a clearer image.");
+  if(
+    !extractedText ||
+    extractedText.includes(
+      "IMAGE_NOT_READABLE"
+    )
+  ){
+    throw new Error(
+      "The image could not be read. Please upload a clearer image."
+    );
   }
 
   return extractedText;
 }
+
 function calculateFinalCEFR(
   testLevel,
   writingLevel,
@@ -4125,35 +4038,187 @@ function calculateFinalCEFR(
 
 }
 
-function getPlacementLevel(
-  cefr
-){
 
-  switch(cefr){
 
-    case "A1":
-      return "Level 1";
+/* ==============================
+   AI FINAL CEFR
+   يراجع جميع نتائج الاختبار والكتابة والتحدث
+============================== */
+const OPENAI_WORKER_URL =
+  "https://prudle-openai.abbassaboali.workers.dev/";
 
-    case "A2":
-      return "Level 3";
+function extractAIText(data){
+  return String(
+    data?.text ||
+    data?.output_text ||
+    data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+    ""
+  ).trim();
+}
 
-    case "B1":
-      return "Level 5";
+function cleanAIJSON(text){
+  return String(text || "")
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+}
 
-    case "B2":
-      return "Level 7";
+async function calculateAIFinalCEFR({
+  testLevel,
+  placementLevel,
+  stats,
+  writing,
+  speaking
+}){
+  const fallbackLevel = calculateFinalCEFR(
+    testLevel,
+    writing?.level,
+    speaking?.level
+  );
 
-    case "C1":
-      return "Level 9";
+  const prompt = `
+You are a senior CEFR placement examiner.
 
-    case "C2":
-      return "Level 11";
+Review ALL available evidence and explain the official final CEFR decision.
+The official institute rule is mandatory: the final CEFR is the lowest valid level
+among the placement test, writing, and speaking. Do not override or raise this result.
 
-    default:
-      return "-";
+Valid levels only: A1, A2, B1, B2, C1, C2.
 
+Evidence:
+1. Adaptive placement test CEFR: ${testLevel || "Not available"}
+2. Placement course level: ${placementLevel || "Not available"}
+3. Placement test statistics by level and section:
+${JSON.stringify(stats || {}, null, 2)}
+
+4. Writing assessment:
+${JSON.stringify(writing || {}, null, 2)}
+
+5. Speaking assessment:
+${JSON.stringify(speaking || {}, null, 2)}
+
+Decision rules:
+- Consider grammar, vocabulary, reading, listening, writing, fluency, pronunciation, coherence, and task achievement.
+- Give more weight to consistent evidence across multiple skills.
+- Apply the mandatory lowest-component rule exactly.
+- Use the detailed evidence only to explain the decision clearly.
+- Never return a level outside A1-C2.
+- Explain the main evidence briefly.
+
+Return ONLY valid JSON in this exact structure:
+{
+  "finalCEFR": "A1",
+  "confidence": 0,
+  "reason": "",
+  "strengths": [],
+  "limitations": []
+}
+
+Confidence must be an integer from 0 to 100.
+`;
+
+  try{
+    const response = await fetch(
+      OPENAI_WORKER_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          task: "generic_ai",
+          text: prompt,
+          json: true,
+          temperature: 0.1
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if(!response.ok){
+      throw new Error(
+        data?.error ||
+        "AI final CEFR evaluation failed."
+      );
+    }
+
+    const parsed = JSON.parse(
+      cleanAIJSON(extractAIText(data))
+    );
+
+    const validLevels = [
+      "A1", "A2", "B1", "B2", "C1", "C2"
+    ];
+
+    const aiSuggestedCEFR = String(
+      parsed?.finalCEFR || ""
+    ).toUpperCase();
+
+    if(!validLevels.includes(aiSuggestedCEFR)){
+      throw new Error(
+        "AI returned an invalid CEFR level."
+      );
+    }
+
+    // The final result must always follow the institute's conservative rule:
+    // Final CEFR = the lowest valid level among test, writing and speaking.
+    // AI may explain the evidence, but it cannot raise the final level.
+    const finalCEFR = fallbackLevel;
+
+    return {
+      finalCEFR,
+      confidence: Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round(Number(parsed?.confidence) || 0)
+        )
+      ),
+      reason: String(parsed?.reason || "").trim(),
+      strengths: Array.isArray(parsed?.strengths)
+        ? parsed.strengths
+        : [],
+      limitations: Array.isArray(parsed?.limitations)
+        ? parsed.limitations
+        : [],
+      source: "ai"
+    };
+
+  }catch(error){
+    console.error(
+      "AI Final CEFR fallback:",
+      error
+    );
+
+    return {
+      finalCEFR: fallbackLevel,
+      confidence: 0,
+      reason:
+        "AI review was unavailable, so the system used the existing conservative CEFR rule.",
+      strengths: [],
+      limitations: [
+        error?.message || "AI evaluation unavailable"
+      ],
+      source: "fallback"
+    };
   }
+}
 
+function getPlacementLevel(cefr){
+  // When the final CEFR is lower than the placement-test CEFR,
+  // place the student in the second course level of that CEFR band.
+  // Examples: A1 -> Level 2, A2 -> Level 4, B1 -> Level 6.
+  const finalLevelMap = {
+    A1: "Level 2",
+    A2: "Level 4",
+    B1: "Level 6",
+    B2: "Level 8",
+    C1: "Level 10",
+    C2: "Level 12"
+  };
+
+  return finalLevelMap[cefr] || "-";
 }
 function imageToBase64(file){
   return new Promise((resolve, reject) => {
@@ -4170,6 +4235,157 @@ function imageToBase64(file){
     reader.readAsDataURL(file);
   });
 }
+
+/* =========================================
+   MOBILE IMAGE OCR + AUTOMATIC ANALYSIS
+   عند اختيار صورة من الجوال:
+   1) تتحول الصورة إلى نص
+   2) يظهر النص في مربع الكتابة
+   3) يبدأ التحليل تلقائياً
+========================================= */
+async function handleWritingFileUpload(event){
+
+  const input = event?.target;
+  const file = input?.files?.[0];
+
+  if(!file){
+    return;
+  }
+
+  const statusBox =
+    document.getElementById("writingImageStatus");
+
+  const writingTextBox =
+    document.getElementById("writingText");
+
+  const writingResultBox =
+    document.getElementById("writingResult");
+
+  const isImage =
+    String(file.type || "")
+      .toLowerCase()
+      .startsWith("image/") ||
+    /\.(jpg|jpeg|png|webp|heic|heif)$/i
+      .test(file.name || "");
+
+  /*
+    الملفات غير الصورية تبقى بالطريقة المعتادة:
+    يضغط الطالب Analyze Writing بعد اختيار الملف.
+  */
+  if(!isImage){
+    if(statusBox){
+      statusBox.style.display = "block";
+      statusBox.innerHTML =
+        "File selected. Click <b>Analyze Writing</b> to continue.";
+    }
+    return;
+  }
+
+  try{
+
+    if(statusBox){
+      statusBox.style.display = "block";
+      statusBox.innerHTML =
+        "Reading the image and converting it to text...";
+    }
+
+    if(writingResultBox){
+      writingResultBox.innerHTML =
+        "<div class='result'>Reading image...</div>";
+    }
+
+    /*
+      getWritingText() يستدعي extractTextWithAI()
+      للصور ويعيد النص المكتوب أو المطبوع.
+    */
+    const extractedText =
+      String(
+        await getWritingText(file)
+      ).trim();
+
+    if(
+      !extractedText ||
+      extractedText.length < 10
+    ){
+      throw new Error(
+        "Very little text was detected. Please upload a clearer photo."
+      );
+    }
+
+    writingTextBox.value =
+      extractedText;
+
+    /*
+      إطلاق أحداث الإدخال لتحديث أي عداد أو منطق
+      مرتبط بمربع الكتابة.
+    */
+    writingTextBox.dispatchEvent(
+      new Event("input", {
+        bubbles:true
+      })
+    );
+
+    writingTextBox.dispatchEvent(
+      new Event("change", {
+        bubbles:true
+      })
+    );
+
+    if(statusBox){
+      statusBox.innerHTML =
+        "Text extracted successfully. Starting analysis...";
+    }
+
+    if(writingResultBox){
+      writingResultBox.innerHTML =
+        "<div class='result'>Text extracted. Analyzing writing...</div>";
+    }
+
+    /*
+      انتظار لحظة قصيرة حتى يظهر النص على شاشة الجوال،
+      ثم تشغيل التحليل تلقائياً.
+    */
+    await new Promise(
+      resolve => setTimeout(resolve, 250)
+    );
+
+    await analyzeWriting();
+
+    if(statusBox){
+      statusBox.innerHTML =
+        "Image converted to text and analyzed successfully.";
+    }
+
+  }catch(error){
+
+    console.error(
+      "Mobile image OCR error:",
+      error
+    );
+
+    if(statusBox){
+      statusBox.style.display = "block";
+      statusBox.innerHTML =
+        "Could not read the image. Please take a clearer photo with good lighting.";
+    }
+
+    if(writingResultBox){
+      writingResultBox.innerHTML =
+        `<div class="result" style="border-color:#dc2626;color:#991b1b;">
+          ${String(error?.message || "Image reading failed.")}
+        </div>`;
+    }
+
+    /*
+      إعادة تفعيل الاختيار حتى يستطيع الطالب
+      رفع الصورة نفسها مرة أخرى بعد تحسينها.
+    */
+    if(input){
+      input.value = "";
+    }
+  }
+}
+
 async function analyzeWriting(){
 const btn =
   document.querySelector(
@@ -4265,47 +4481,9 @@ const result =
 writingScore =
   result.score;
 
-const placementLevel =
-  document
-    .querySelector(
-      "#result .final-level"
-    )
-    ?.innerText || "-";
+const placementLevel = currentPlacementLevel || progress?.placementLevel || "Level 1";
 
-const testLevel =
-  getCEFRFromPlacement(
-    placementLevel
-  );
-
-const finalCEFR =
-  calculateFinalCEFR(
-    testLevel,
-    result.level,
-    result.level
-  );
-
-const savedPlacementLevel =
-  currentPlacementLevel;
-const currentCEFR =
-  getCEFRFromPlacement(
-    savedPlacementLevel
-  );
-let finalPlacementLevel;
-
-if(
-  finalCEFR === currentCEFR
-){
-
-finalPlacementLevel =
-  savedPlacementLevel;
-}else{
-
-  finalPlacementLevel =
-    getPlacementLevel(
-      finalCEFR
-    );
-
-}
+const savedPlacementLevel = currentPlacementLevel || placementLevel;
 const oldDoc =
   await db
     .collection("cefr_results")
@@ -4343,13 +4521,10 @@ speakingTranscript:
 
 speakingAudio:
   oldData.speakingAudio || "",
-finalCEFR: finalCEFR,
-
-finalPlacementLevel:
-  finalPlacementLevel,
-
-finalLevel:
-  finalPlacementLevel,
+finalCEFR:"",
+finalPlacementLevel:"",
+finalLevel:"",
+assessmentCompleted:false,
 allowRetake:false,
   name:
     document
@@ -4392,6 +4567,9 @@ placementLevel:
   writingScore:
     result.score,
 
+  writingCompleted:true,
+  speakingCompleted:false,
+  assessmentCompleted:false,
   stats:finalStats,
 
   date:
@@ -4561,6 +4739,11 @@ document
   )
   .style.display =
   "block";
+
+const speakingBoxElement = document.getElementById("speakingBox");
+requestAnimationFrame(()=>{
+  speakingBoxElement.scrollIntoView({behavior:"smooth", block:"start"});
+});
 
 currentSpeakingIndex =
   SPEAKING_LEVELS.indexOf(
@@ -4760,6 +4943,9 @@ async function startRecording(){
   audioChunks = [];
   currentAudioBlob = null;
   currentTranscript = "";
+  recordingReady = false;
+  const analyzeBtn = document.getElementById("analyzeSpeakingBtn");
+  if(analyzeBtn) analyzeBtn.disabled = true;
 
   const recordBtn =
     document.getElementById("recordBtn");
@@ -4783,6 +4969,8 @@ async function startRecording(){
       await navigator.mediaDevices.getUserMedia({
         audio:true
       });
+
+    recordingStream = stream;
 
     recordBtn.style.background = "#dc2626";
     recordBtn.innerText = "Recording...";
@@ -4825,14 +5013,20 @@ async function startRecording(){
       function(){
 
         clearInterval(recordingTimerInterval);
+        recordingTimerInterval = null;
 
         recordBtn.style.background = "#164478";
         recordBtn.innerText = "Start Recording Answer";
+        recordBtn.disabled = false;
 
         currentAudioBlob =
           new Blob(audioChunks,{
             type:"audio/webm"
           });
+
+        recordingReady = currentAudioBlob.size > 0;
+        const analyzeBtn = document.getElementById("analyzeSpeakingBtn");
+        if(analyzeBtn) analyzeBtn.disabled = !recordingReady;
 
         const audioUrl =
           URL.createObjectURL(currentAudioBlob);
@@ -4861,6 +5055,7 @@ async function startRecording(){
         stream.getTracks().forEach(
           track => track.stop()
         );
+        recordingStream = null;
 
       };
 
@@ -4884,16 +5079,32 @@ async function startRecording(){
 }
 function stopRecording(){
 
+  // Stop the visible timer immediately when the user presses Stop.
+  if(recordingTimerInterval){
+    clearInterval(recordingTimerInterval);
+    recordingTimerInterval = null;
+  }
+
+  const recordTimer = document.getElementById("recordTimer");
+  if(recordTimer){
+    recordTimer.style.display = "block";
+  }
+
   if(
     mediaRecorder &&
     mediaRecorder.state === "recording"
   ){
+    mediaRecorder.requestData();
     mediaRecorder.stop();
+
+    const recordBtn = document.getElementById("recordBtn");
+    if(recordBtn){
+      recordBtn.disabled = true;
+      recordBtn.innerText = "Preparing Audio...";
+    }
   }else{
     alert("No recording is running.");
   }
-
-
 }
 
 async function evaluateSpeakingAnswerAI(
@@ -4978,8 +5189,8 @@ async function analyzeSpeakingAnswer(){
     return;
   }
 
-  if(!currentAudioBlob){
-    alert("Please record your answer first.");
+  if(!currentAudioBlob || !recordingReady){
+    alert("Please stop the recording and wait until the audio is ready.");
     return;
   }
 
@@ -5361,15 +5572,41 @@ const testLevel =
   getCEFRFromPlacement(
     current.placementLevel
   );
-const finalCEFR =
-  calculateFinalCEFR(
+
+const aiFinalResult =
+  await calculateAIFinalCEFR({
     testLevel,
-    current.writingLevel,
-    speakingLevel
-  );
+    placementLevel: current.placementLevel,
+    stats: current.stats || finalStats,
+    writing: {
+      level: current.writingLevel || "",
+      score: current.writingScore || 0,
+      grammar: current.writingGrammar || 0,
+      vocabulary: current.writingVocabulary || 0,
+      coherence: current.writingCoherence || 0,
+      taskAchievement: current.writingTaskAchievement || 0,
+      feedback: current.writingFeedback || "",
+      text: current.writingText || ""
+    },
+    speaking: {
+      level: speakingLevel || "",
+      fluency: speakingFluency || 0,
+      grammar: speakingGrammar || 0,
+      vocabulary: speakingVocabulary || 0,
+      pronunciation: speakingPronunciation || 0,
+      feedback: speakingFeedback || "",
+      transcript: speakingTranscript || "",
+      questions: speakingResults || []
+    }
+  });
+
+const finalCEFR =
+  aiFinalResult.finalCEFR;
 
 const finalPlacementLevel =
-  getPlacementLevel(finalCEFR);
+  finalCEFR === testLevel
+    ? current.placementLevel
+    : getPlacementLevel(finalCEFR);
   console.log(
     "Transcript Length:",
     speakingTranscript?.length
@@ -5446,11 +5683,46 @@ await db
     finalCEFR:
       finalCEFR,
 
+    aiFinalCEFR:
+      aiFinalResult.finalCEFR,
+
+    aiFinalConfidence:
+      aiFinalResult.confidence,
+
+    aiFinalReason:
+      aiFinalResult.reason,
+
+    aiFinalStrengths:
+      aiFinalResult.strengths,
+
+    aiFinalLimitations:
+      aiFinalResult.limitations,
+
+    aiFinalSource:
+      aiFinalResult.source,
+
+    aiFinalReviewedAt:
+      firebase.firestore.FieldValue.serverTimestamp(),
+
     finalPlacementLevel:
       finalPlacementLevel,
-finalLevel:
-finalPlacementLevel
+finalLevel:finalPlacementLevel,
+    writingCompleted:true,
+    speakingCompleted:true,
+    assessmentCompleted:true
   });
+  // Do not reveal Final CEFR or Final Level to the candidate.
+  // They are saved in Firebase and displayed only on the reports page.
+  document.getElementById("result").innerHTML = `
+    <div class="result">
+      <h2>Assessment Completed</h2>
+      <p>Your responses have been submitted successfully.</p>
+      <p>The placement result will be available through the institute.</p>
+    </div>
+  `;
+
+  document.getElementById("result").scrollIntoView({behavior:"smooth", block:"start"});
+
   const progress =
     JSON.parse(
       localStorage.getItem(
