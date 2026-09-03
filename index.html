@@ -385,6 +385,7 @@ Writing Assessment
 <textarea
 id="writingText"
 placeholder="Write your essay here..."
+onpaste="handleWritingPaste(event)"
 spellcheck="false"
 autocorrect="off"
 autocomplete="off"
@@ -545,6 +546,18 @@ Stop Recording
   "
 ></audio>
 
+<div style="margin:18px 0 8px;text-align:center;font-weight:900;color:#164478">
+  OR UPLOAD A SPEAKING AUDIO FILE
+</div>
+<input
+  id="speakingFile"
+  type="file"
+  accept="audio/*,video/mp4,.mp3,.m4a,.aac,.wav,.ogg,.webm,.mp4,.flac"
+  onchange="handleSpeakingFileUpload(event)"
+  style="display:block;width:100%;max-width:420px;margin:0 auto"
+>
+<div id="speakingUploadStatus" style="display:none;margin-top:10px;text-align:center;font-weight:800;color:#164478"></div>
+
 <br><br>
 
 <button id="analyzeSpeakingBtn" onclick="analyzeSpeakingAnswer()" disabled>
@@ -634,6 +647,9 @@ let finalStats = {};
 let currentLevelQuestions = [];
 let currentSectionIndex = 0;
 let preparedLevels = {};
+// Saved for the final administrative/student review.  It records the exact
+// shuffled options that the student saw, together with the selected option.
+let placementResponses = [];
 
 const SECTIONS = [
   "Grammar",
@@ -662,6 +678,7 @@ let currentSpeakingQuestion = "";
 let speakingResults = [];
 let speakingAudios = [];
 let currentAudioBlob = null;
+let currentAudioFileName = "";
 let recognition;
 let currentTranscript = "";
  
@@ -782,6 +799,148 @@ function prepareQuestion(q){
     shuffledOptions,
     newAnswerIndex
   };
+}
+
+function escapeHTML(value){
+  return String(value ?? "")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/\"/g,"&quot;")
+    .replace(/'/g,"&#039;");
+}
+
+// Word, PDF readers and mobile apps often add invisible characters to copied
+// text.  Removing them here makes pasted answers behave exactly like typed text.
+function normalizeWritingText(value){
+  return String(value || "")
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function handleWritingPaste(event){
+  const clipboard = event.clipboardData || window.clipboardData;
+  const pastedText = clipboard?.getData("text/plain") || clipboard?.getData("text") || "";
+
+  // Let the browser handle a paste only when it did not supply plain text.
+  if(!pastedText) return;
+
+  event.preventDefault();
+
+  const box = event.currentTarget || document.getElementById("writingText");
+  const cleanText = normalizeWritingText(pastedText);
+  const start = box.selectionStart || 0;
+  const end = box.selectionEnd || start;
+
+  box.setRangeText(cleanText, start, end, "end");
+  box.dispatchEvent(new Event("input", {bubbles:true}));
+  box.dispatchEvent(new Event("change", {bubbles:true}));
+
+  const status = document.getElementById("writingImageStatus");
+  if(status && cleanText){
+    status.style.display = "block";
+    status.textContent = "Text pasted successfully. Click Analyze Writing to continue.";
+  }
+}
+
+function buildPlacementResponses(){
+  const rows = [];
+
+  Object.keys(finalStats).forEach(level=>{
+    const levelSections = getLevelSections(level);
+
+    SECTIONS.forEach(section=>{
+      (levelSections[section] || []).forEach((q,index)=>{
+        const answerKey = `${level}_${section}_${index}`;
+        const selectedIndex = answers[answerKey];
+
+        if(selectedIndex === undefined) return;
+
+        rows.push({
+          level,
+          section,
+          question: q.q || "",
+          passage: q.text || "",
+          options: (q.shuffledOptions || []).map(option=>option.text),
+          selectedIndex: Number(selectedIndex),
+          selectedAnswer:
+            q.shuffledOptions?.[Number(selectedIndex)]?.text || "",
+          correct: Number(selectedIndex) === q.newAnswerIndex
+        });
+      });
+    });
+  });
+
+  return rows;
+}
+
+function renderAssessmentReview(data){
+  const placement = Array.isArray(data.placementResponses)
+    ? data.placementResponses
+    : [];
+  const speaking = Array.isArray(data.speakingQuestions)
+    ? data.speakingQuestions
+    : [];
+  const writingScore = Number(data.writingScore || 0);
+  const speakingScore = speaking.length
+    ? Math.round(speaking.reduce((sum,row)=>sum + Number(row.score || 0),0) / speaking.length)
+    : 0;
+
+  const placementHTML = placement.map((row,index)=>`
+    <div class="reading" style="margin:12px 0;text-align:left">
+      <b>${index + 1}. [${escapeHTML(row.level)} · ${escapeHTML(row.section)}]</b><br>
+      ${row.passage ? `<div style="margin:8px 0">${escapeHTML(row.passage)}</div>` : ""}
+      <b>${escapeHTML(row.question)}</b>
+      <ol type="A" style="margin:8px 0 8px 22px">
+        ${(row.options || []).map((option,optionIndex)=>`<li style="${optionIndex === Number(row.selectedIndex) ? "font-weight:800;color:#164478" : ""}">${escapeHTML(option)}${optionIndex === Number(row.selectedIndex) ? " — Student answer" : ""}</li>`).join("")}
+      </ol>
+    </div>
+  `).join("") || "<p>No placement answers were saved.</p>";
+
+  const speakingHTML = speaking.map((row,index)=>`
+    <div class="reading" style="margin:12px 0;text-align:left">
+      <b>Question ${index + 1} (${escapeHTML(row.targetLevel || row.level || "-")})</b><br>
+      <b>Question:</b> ${escapeHTML(row.question)}<br><br>
+      <b>Student answer:</b><br>${escapeHTML(row.transcript || "No transcript available.")}<br><br>
+      <b>Score:</b> ${Number(row.score || 0)}% &nbsp; | &nbsp;
+      Fluency: ${Number(row.fluency || 0)}% &nbsp; | &nbsp;
+      Grammar: ${Number(row.grammar || 0)}% &nbsp; | &nbsp;
+      Vocabulary: ${Number(row.vocabulary || 0)}% &nbsp; | &nbsp;
+      Pronunciation: ${Number(row.pronunciation || 0)}%
+    </div>
+  `).join("") || "<p>No speaking answers were saved.</p>";
+
+  return `
+    <div class="result" style="text-align:left">
+      <h2>Assessment Result</h2>
+      <div class="stats">
+        <div class="stat-box">Final CEFR<br><br><b>${escapeHTML(data.finalCEFR || "-")}</b></div>
+        <div class="stat-box">Prudle Level<br><br><b>${escapeHTML(data.finalPlacementLevel || "-")}</b></div>
+        <div class="stat-box">Writing<br><br><b>${writingScore}%</b></div>
+        <div class="stat-box">Speaking<br><br><b>${speakingScore}%</b></div>
+      </div>
+
+      <h3>Part 1: Placement Test Answers</h3>
+      ${placementHTML}
+
+      <h3>Writing Assessment</h3>
+      <div class="reading">
+        <b>Topic:</b> ${escapeHTML(data.writingTopic || "-")}<br><br>
+        <b>Student answer:</b><br>${escapeHTML(data.writingText || "-")}<br><br>
+        <b>Writing score:</b> ${writingScore}%<br>
+        Grammar: ${Number(data.writingGrammar || 0)}% &nbsp; | &nbsp;
+        Vocabulary: ${Number(data.writingVocabulary || 0)}% &nbsp; | &nbsp;
+        Coherence: ${Number(data.writingCoherence || 0)}%
+      </div>
+
+      <h3>Speaking Assessment</h3>
+      ${speakingHTML}
+    </div>
+  `;
 }
 
 /* ==============================
@@ -3659,6 +3818,7 @@ function getCEFRFromPlacement(level){
 
 async function showResult(level){
   currentPlacementLevel = level;
+  placementResponses = buildPlacementResponses();
 
   document.getElementById("testBox").style.display = "none";
   document.getElementById("submitArea").style.display = "none";
@@ -3698,7 +3858,8 @@ async function showResult(level){
     writingTopic,
     placementLevel:level,
     finalLevel:"",
-    finalStats
+    finalStats,
+    placementResponses
   };
 
   await saveProgress(studentProgress);
@@ -3715,6 +3876,8 @@ async function showResult(level){
     finalLevel:"",
     finalPlacementLevel:"",
     stats:finalStats,
+    placementResponses,
+    writingTopic,
     testCompleted:true,
     writingCompleted:false,
     speakingCompleted:false,
@@ -4403,13 +4566,14 @@ btn.disabled = true;
 btn.innerText =
   "Saving...";
 
-let text =
-document
-.getElementById(
-"writingText"
-)
-.value
-.trim();
+const writingTextBox = document.getElementById("writingText");
+
+// Wait one frame so a paste made immediately before clicking the button is
+// fully reflected in the textarea, especially on mobile browsers.
+await new Promise(resolve => requestAnimationFrame(resolve));
+
+let text = normalizeWritingText(writingTextBox.value);
+writingTextBox.value = text;
 
 if(!text){
 
@@ -4440,6 +4604,8 @@ text =
 await getWritingText(
 file
 );
+
+text = normalizeWritingText(text);
 
 // ✅ إظهار النص المستخرج للطالب
 document
@@ -4554,6 +4720,9 @@ allowRetake:false,
 
   writingCoherence:
     result.coherence,
+
+  writingTaskAchievement:
+    result.taskAchievement,
 
 level:
   Object.keys(finalStats).length
@@ -4931,155 +5100,310 @@ return data.candidates?.[0]
 ?.trim();
 }
 
+
+/* =========================================================
+   CROSS-PLATFORM AUDIO RECORDING (iOS Safari + Android Chrome)
+   ========================================================= */
+function getSupportedAudioMimeType(){
+  if(typeof MediaRecorder === "undefined"){
+    return "";
+  }
+
+  const candidates = [
+    // Safari / iPhone / iPad
+    "audio/mp4;codecs=mp4a.40.2",
+    "audio/mp4",
+    // Chrome / Android
+    "audio/webm;codecs=opus",
+    "audio/webm"
+  ];
+
+  if(typeof MediaRecorder.isTypeSupported !== "function"){
+    return "";
+  }
+
+  return candidates.find(type => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function getAudioFileExtension(mimeType){
+  const type = String(mimeType || "").toLowerCase();
+  if(type.includes("mp4") || type.includes("m4a")) return "m4a";
+  if(type.includes("mpeg") || type.includes("mp3")) return "mp3";
+  if(type.includes("aac")) return "aac";
+  if(type.includes("flac")) return "flac";
+  if(type.includes("ogg")) return "ogg";
+  if(type.includes("wav")) return "wav";
+  return "webm";
+}
+
+function getUploadedAudioMimeType(file){
+  if(file?.type) return file.type;
+
+  const name = String(file?.name || "").toLowerCase();
+  if(name.endsWith(".mp3")) return "audio/mpeg";
+  if(name.endsWith(".m4a")) return "audio/mp4";
+  if(name.endsWith(".mp4")) return "video/mp4";
+  if(name.endsWith(".aac")) return "audio/aac";
+  if(name.endsWith(".wav")) return "audio/wav";
+  if(name.endsWith(".ogg")) return "audio/ogg";
+  if(name.endsWith(".flac")) return "audio/flac";
+  return "audio/webm";
+}
+
+async function handleSpeakingFileUpload(event){
+  const file = event?.target?.files?.[0];
+  const status = document.getElementById("speakingUploadStatus");
+
+  if(!file) return;
+
+  const allowed =
+    /^audio\//i.test(file.type || "") ||
+    /^video\/mp4$/i.test(file.type || "") ||
+    /\.(mp3|m4a|aac|wav|ogg|webm|mp4|flac)$/i.test(file.name || "");
+
+  if(!allowed){
+    alert("Please select a valid audio file (MP3, M4A, MP4, WAV, AAC, OGG, WEBM or FLAC).");
+    event.target.value = "";
+    return;
+  }
+
+  if(file.size > 15 * 1024 * 1024){
+    alert("Please upload an audio file smaller than 15 MB.");
+    event.target.value = "";
+    return;
+  }
+
+  try{
+    // Ensure that the question is loaded before automatic analysis starts.
+    if(!currentSpeakingQuestion){
+      await startSpeakingTest();
+    }
+
+    currentAudioBlob = new Blob([file], {type:getUploadedAudioMimeType(file)});
+    currentAudioFileName = file.name || "uploaded-speaking-audio";
+    recordingReady = currentAudioBlob.size > 0;
+
+    const preview = document.getElementById("audioPreview");
+    preview.src = URL.createObjectURL(currentAudioBlob);
+    preview.style.display = "block";
+
+    if(status){
+      status.style.display = "block";
+      status.textContent = "Audio uploaded. Transcribing and analyzing automatically...";
+    }
+
+    await analyzeSpeakingAnswer();
+
+    if(status){
+      status.textContent = "Audio analyzed and saved successfully.";
+    }
+  }catch(error){
+    console.error("Uploaded speaking audio error:",error);
+    if(status){
+      status.style.display = "block";
+      status.textContent = error?.message || "Could not analyze this audio file.";
+    }
+  }
+}
+
+function explainMicrophoneError(err){
+  const name = err?.name || "";
+  if(name === "NotAllowedError" || name === "PermissionDeniedError"){
+    return "Microphone access was denied. Please allow microphone permission in your browser settings and try again.";
+  }
+  if(name === "NotFoundError" || name === "DevicesNotFoundError"){
+    return "No microphone was found on this device.";
+  }
+  if(name === "NotReadableError" || name === "TrackStartError"){
+    return "The microphone is busy or unavailable. Close other apps using the microphone and try again.";
+  }
+  if(name === "SecurityError"){
+    return "Microphone access requires a secure HTTPS connection.";
+  }
+  return err?.message || "Could not start microphone recording.";
+}
+
 async function startRecording(){
-  if(
-    mediaRecorder &&
-    mediaRecorder.state === "recording"
-  ){
+  if(mediaRecorder && mediaRecorder.state === "recording"){
     alert("Recording is already running.");
     return;
   }
 
   audioChunks = [];
   currentAudioBlob = null;
+  currentAudioFileName = "";
   currentTranscript = "";
   recordingReady = false;
+
   const analyzeBtn = document.getElementById("analyzeSpeakingBtn");
   if(analyzeBtn) analyzeBtn.disabled = true;
 
-  const recordBtn =
-    document.getElementById("recordBtn");
-
-  const recordTimer =
-    document.getElementById("recordTimer");
+  const recordBtn = document.getElementById("recordBtn");
+  const recordTimer = document.getElementById("recordTimer");
 
   try{
+    if(!window.isSecureContext){
+      throw new Error("Microphone access requires HTTPS.");
+    }
 
     if(
       !navigator.mediaDevices ||
-      !navigator.mediaDevices.getUserMedia
+      typeof navigator.mediaDevices.getUserMedia !== "function" ||
+      typeof MediaRecorder === "undefined"
     ){
-      alert(
-        "Microphone is not supported on this device."
-      );
-      return;
+      throw new Error("Audio recording is not supported by this browser.");
     }
 
-    const stream =
-      await navigator.mediaDevices.getUserMedia({
-        audio:true
-      });
+    // Keep the constraints simple for the best iOS / Android compatibility.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio:{
+        echoCancellation:true,
+        noiseSuppression:true,
+        autoGainControl:true
+      },
+      video:false
+    });
 
     recordingStream = stream;
 
+    const preferredMimeType = getSupportedAudioMimeType();
+
+    // If the browser reports no supported MIME type, allow it to choose its native format.
+    mediaRecorder = preferredMimeType
+      ? new MediaRecorder(stream,{mimeType:preferredMimeType})
+      : new MediaRecorder(stream);
+
+    const actualMimeType =
+      mediaRecorder.mimeType ||
+      preferredMimeType ||
+      "";
+
+    console.log("Recording MIME type:", actualMimeType || "browser default");
+
     recordBtn.style.background = "#dc2626";
     recordBtn.innerText = "Recording...";
+    recordBtn.disabled = true;
 
     recordingSeconds = 0;
     recordTimer.innerText = "00:00";
     recordTimer.style.display = "block";
 
-    recordingTimerInterval =
-      setInterval(function(){
+    recordingTimerInterval = setInterval(function(){
+      recordingSeconds++;
 
-        recordingSeconds++;
+      const minutes =
+        String(Math.floor(recordingSeconds / 60)).padStart(2,"0");
 
-        const minutes =
-          String(Math.floor(recordingSeconds / 60))
-            .padStart(2,"0");
+      const seconds =
+        String(recordingSeconds % 60).padStart(2,"0");
 
-        const seconds =
-          String(recordingSeconds % 60)
-            .padStart(2,"0");
+      recordTimer.innerText = minutes + ":" + seconds;
+    },1000);
 
-        recordTimer.innerText =
-          minutes + ":" + seconds;
+    mediaRecorder.ondataavailable = function(e){
+      if(e.data && e.data.size > 0){
+        audioChunks.push(e.data);
+      }
+    };
 
-      },1000);
+    mediaRecorder.onerror = function(event){
+      console.error("MediaRecorder error:",event?.error || event);
+    };
 
-    mediaRecorder =
-      new MediaRecorder(stream);
+    mediaRecorder.onstop = function(){
+      clearInterval(recordingTimerInterval);
+      recordingTimerInterval = null;
 
-    mediaRecorder.ondataavailable =
-      function(e){
+      recordBtn.style.background = "#164478";
+      recordBtn.innerText = "Start Recording Answer";
+      recordBtn.disabled = false;
 
-        if(e.data.size > 0){
-          audioChunks.push(e.data);
+      // IMPORTANT: Never force audio/webm.
+      // iPhone/Safari commonly records MP4/AAC while Android/Chrome commonly records WebM/Opus.
+      const chunkMimeType =
+        audioChunks.find(chunk => chunk?.type)?.type || "";
+
+      const finalMimeType =
+        mediaRecorder?.mimeType ||
+        chunkMimeType ||
+        preferredMimeType ||
+        "audio/webm";
+
+      currentAudioBlob = new Blob(audioChunks,{
+        type: finalMimeType
+      });
+
+      console.log(
+        "Recorded blob:",
+        currentAudioBlob.size,
+        currentAudioBlob.type
+      );
+
+      recordingReady = currentAudioBlob.size > 0;
+
+      const analyzeBtn =
+        document.getElementById("analyzeSpeakingBtn");
+
+      if(analyzeBtn){
+        analyzeBtn.disabled = !recordingReady;
+      }
+
+      if(recordingReady){
+        const audioUrl = URL.createObjectURL(currentAudioBlob);
+        const audio = document.getElementById("audioPreview");
+
+        if(audio){
+          audio.src = audioUrl;
+          audio.style.display = "block";
+          audio.load();
         }
 
-      };
+        const reader = new FileReader();
 
-    mediaRecorder.onstop =
-      function(){
-
-        clearInterval(recordingTimerInterval);
-        recordingTimerInterval = null;
-
-        recordBtn.style.background = "#164478";
-        recordBtn.innerText = "Start Recording Answer";
-        recordBtn.disabled = false;
-
-        currentAudioBlob =
-          new Blob(audioChunks,{
-            type:"audio/webm"
-          });
-
-        recordingReady = currentAudioBlob.size > 0;
-        const analyzeBtn = document.getElementById("analyzeSpeakingBtn");
-        if(analyzeBtn) analyzeBtn.disabled = !recordingReady;
-
-        const audioUrl =
-          URL.createObjectURL(currentAudioBlob);
-
-        const audio =
-          document.getElementById("audioPreview");
-
-        audio.src = audioUrl;
-        audio.style.display = "block";
-
-        const reader =
-          new FileReader();
-
-        reader.onloadend =
-          function(){
-
-            speakingAudioBase64 =
-              reader.result;
-
-            speakingAudios.push(reader.result);
-
-          };
+        reader.onloadend = function(){
+          speakingAudioBase64 = reader.result;
+          speakingAudios.push(reader.result);
+        };
 
         reader.readAsDataURL(currentAudioBlob);
+      }else{
+        alert("No audio was captured. Please record your answer again.");
+      }
 
-        stream.getTracks().forEach(
-          track => track.stop()
-        );
+      if(recordingStream){
+        recordingStream.getTracks().forEach(track => track.stop());
         recordingStream = null;
+      }
+    };
 
-      };
-
-    mediaRecorder.start();
+    // A timeslice helps Safari/Chrome flush data reliably.
+    mediaRecorder.start(1000);
 
   }catch(err){
-
-    console.error(err);
+    console.error("Microphone / recorder error:",err);
 
     clearInterval(recordingTimerInterval);
+    recordingTimerInterval = null;
 
-    recordTimer.style.display = "none";
+    if(recordTimer){
+      recordTimer.style.display = "none";
+    }
 
-    recordBtn.style.background = "#164478";
-    recordBtn.innerText = "Start Recording Answer";
+    if(recordBtn){
+      recordBtn.style.background = "#164478";
+      recordBtn.innerText = "Start Recording Answer";
+      recordBtn.disabled = false;
+    }
 
-    alert("Please allow microphone access.");
+    if(recordingStream){
+      recordingStream.getTracks().forEach(track => track.stop());
+      recordingStream = null;
+    }
 
+    alert(explainMicrophoneError(err));
   }
-
 }
 function stopRecording(){
-
-  // Stop the visible timer immediately when the user presses Stop.
   if(recordingTimerInterval){
     clearInterval(recordingTimerInterval);
     recordingTimerInterval = null;
@@ -5094,7 +5418,16 @@ function stopRecording(){
     mediaRecorder &&
     mediaRecorder.state === "recording"
   ){
-    mediaRecorder.requestData();
+    // requestData() is not equally reliable on every Safari version,
+    // so use it only when supported and never let it block stop().
+    try{
+      if(typeof mediaRecorder.requestData === "function"){
+        mediaRecorder.requestData();
+      }
+    }catch(e){
+      console.warn("requestData skipped:",e);
+    }
+
     mediaRecorder.stop();
 
     const recordBtn = document.getElementById("recordBtn");
@@ -5493,13 +5826,20 @@ document
 }
 
 async function uploadSpeakingAudio(blob){
+  if(!blob || !blob.size){
+    throw new Error("No audio is available to upload.");
+  }
 
-  const form =
-    new FormData();
+  const mimeType = blob.type || "audio/webm";
+  const extension = getAudioFileExtension(mimeType);
 
+  const form = new FormData();
+
+  // Giving the blob a real filename helps iOS/Cloudinary identify MP4/AAC correctly.
   form.append(
     "file",
-    blob
+    blob,
+    currentAudioFileName || `speaking-answer-${Date.now()}.${extension}`
   );
 
   form.append(
@@ -5507,28 +5847,24 @@ async function uploadSpeakingAudio(blob){
     "kcgfhigd"
   );
 
-  const res =
-    await fetch(
-      "https://api.cloudinary.com/v1_1/dgs6mo4hl/auto/upload",
-      {
-        method:"POST",
-        body:form
-      }
-    );
+  const res = await fetch(
+    "https://api.cloudinary.com/v1_1/dgs6mo4hl/auto/upload",
+    {
+      method:"POST",
+      body:form
+    }
+  );
 
-  const data =
-    await res.json();
+  const data = await res.json();
 
-  if(!data.secure_url){
-
+  if(!res.ok || !data.secure_url){
     throw new Error(
+      data?.error?.message ||
       "Cloudinary upload failed"
     );
-
   }
 
   return data.secure_url;
-
 }
 async function saveSpeakingToFirebase(){
 
@@ -5645,6 +5981,12 @@ await db
     speakingAudio:
       audioURL || "",
 
+    speakingAudioName:
+      currentAudioFileName || "",
+
+    speakingAudioMimeType:
+      currentAudioBlob?.type || "",
+
     speakingQuestions:
       speakingResults.map(r=>({
 
@@ -5707,17 +6049,19 @@ await db
     finalPlacementLevel:
       finalPlacementLevel,
 finalLevel:finalPlacementLevel,
+    placementResponses:
+      current.placementResponses || placementResponses || [],
     writingCompleted:true,
     speakingCompleted:true,
     assessmentCompleted:true
   });
-  // Do not reveal Final CEFR or Final Level to the candidate.
-  // They are saved in Firebase and displayed only on the reports page.
+  // Student page: never reveal answers, scores, CEFR, or the recommended
+  // course. Full evidence is saved in Firestore for the admin reports page.
   document.getElementById("result").innerHTML = `
     <div class="result">
       <h2>Assessment Completed</h2>
       <p>Your responses have been submitted successfully.</p>
-      <p>The placement result will be available through the institute.</p>
+      <p>The institute will review your assessment and contact you with your placement result.</p>
     </div>
   `;
 
@@ -5771,39 +6115,51 @@ function blobToBase64(blob){
 
 }
 async function transcribeSpeakingAudio(blob){
+  if(!blob || !blob.size){
+    throw new Error("No recorded audio is available.");
+  }
 
-  const base64Audio =
-    await blobToBase64(blob);
+  const base64Audio = await blobToBase64(blob);
 
-  const response =
-    await fetch(
-      "https://muddy-frost-dfd0.abbassaboali.workers.dev/",
-      {
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json"
-        },
-        body:JSON.stringify({
-          audio: base64Audio,
-          mimeType: "audio/webm"
-        })
-      }
-    );
+  // Send the REAL browser-generated MIME type.
+  // iOS Safari may produce audio/mp4; Android Chrome commonly produces audio/webm.
+  const mimeType =
+    blob.type ||
+    "audio/webm";
+
+  console.log("Transcription MIME type:",mimeType);
+
+  const response = await fetch(
+    "https://muddy-frost-dfd0.abbassaboali.workers.dev/",
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json"
+      },
+      body:JSON.stringify({
+        audio:base64Audio,
+        mimeType:mimeType
+      })
+    }
+  );
 
   const data = await response.json();
 
   if(!response.ok){
     throw new Error(
-      data.error || "Audio transcription failed"
+      data.error ||
+      `Audio transcription failed (${mimeType})`
     );
   }
 
   return (
     data?.candidates?.[0]
       ?.content?.parts?.[0]
-      ?.text || ""
-  );
-
+      ?.text ||
+    data?.text ||
+    data?.transcript ||
+    ""
+  ).trim();
 }
 </script>
 <script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
